@@ -1,1 +1,1 @@
-from .tree import ExtraSurvivalTree, SurvivalTree  # noqa: F401
+from .tree import ExtraSurvivalTree, SurvivalTree, FairSurvivalTree  # noqa: F401

@@ -24,7 +24,7 @@ from ..functions import StepFunction
 from ..util import check_array_survival
 from ._criterion import LogrankCriterion, get_unique_times
 
-__all__ = ["ExtraSurvivalTree", "SurvivalTree"]
+__all__ = ["ExtraSurvivalTree", "SurvivalTree", "FairSurvivalTree"]
 
 DTYPE = _tree.DTYPE
 
@@ -675,6 +675,82 @@ class SurvivalTree(BaseEstimator, SurvivalAnalysisMixin):
         """
         X = self._validate_X_predict(X, check_input)
         return self.tree_.decision_path(X)
+
+
+class FairSurvivalTree(SurvivalTree):
+    def _fit(self, X, y, sample_weight=None, check_input=True, missing_values_in_feature_mask=None):
+        random_state = check_random_state(self.random_state)
+
+        if check_input:
+            X = validate_data(self, X, dtype=DTYPE, ensure_min_samples=2, accept_sparse="csc", ensure_all_finite=False)
+            event, time = check_array_survival(X, y)
+            time = time.astype(np.float64)
+            self.unique_times_, self.is_event_time_ = get_unique_times(time, event)
+            missing_values_in_feature_mask = self._compute_missing_values_in_feature_mask(X)
+            if issparse(X):
+                X.sort_indices()
+
+            y_numeric = np.empty((X.shape[0], 2), dtype=np.float64)
+            y_numeric[:, 0] = time
+            y_numeric[:, 1] = event.astype(np.float64)
+        else:
+            y_numeric, self.unique_times_, self.is_event_time_ = y
+
+        n_samples, self.n_features_in_ = X.shape
+        params = self._check_params(n_samples)
+
+        if self.low_memory:
+            self.n_outputs_ = 1
+            # one "class" only, for the sum over the CHF
+            self.n_classes_ = np.ones(self.n_outputs_, dtype=np.intp)
+        else:
+            self.n_outputs_ = self.unique_times_.shape[0]
+            # one "class" for CHF, one for survival function
+            self.n_classes_ = np.ones(self.n_outputs_, dtype=np.intp) * 2
+
+        # Build tree
+        criterion = LogrankCriterion(self.n_outputs_, n_samples, self.unique_times_, self.is_event_time_)
+
+        SPLITTERS = SPARSE_SPLITTERS if issparse(X) else DENSE_SPLITTERS
+
+        splitter = self.splitter
+        if not isinstance(self.splitter, Splitter):
+            splitter = SPLITTERS[self.splitter](
+                criterion,
+                self.max_features_,
+                params["min_samples_leaf"],
+                params["min_weight_leaf"],
+                random_state,
+                None,  # monotonic_cst
+            )
+
+        self.tree_ = Tree(self.n_features_in_, self.n_classes_, self.n_outputs_)
+
+        # Use BestFirst if max_leaf_nodes given; use DepthFirst otherwise
+        if params["max_leaf_nodes"] < 0:
+            builder = DepthFirstTreeBuilder(
+                splitter,
+                params["min_samples_split"],
+                params["min_samples_leaf"],
+                params["min_weight_leaf"],
+                params["max_depth"],
+                0.0,  # min_impurity_decrease
+            )
+        else:
+            builder = BestFirstTreeBuilder(
+                splitter,
+                params["min_samples_split"],
+                params["min_samples_leaf"],
+                params["min_weight_leaf"],
+                params["max_depth"],
+                params["max_leaf_nodes"],
+                0.0,  # min_impurity_decrease
+            )
+
+        builder.build(self.tree_, X, y_numeric, sample_weight, missing_values_in_feature_mask)
+
+        return self
+
 
 
 class ExtraSurvivalTree(SurvivalTree):
