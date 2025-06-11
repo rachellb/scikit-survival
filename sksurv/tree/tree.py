@@ -678,6 +678,37 @@ class SurvivalTree(BaseEstimator, SurvivalAnalysisMixin):
 
 
 class FairSurvivalTree(SurvivalTree):
+    
+    def fit(self, X, y, group, sample_weight=None, check_input=True):
+        """Build a survival tree from the training set (X, y).
+
+        If ``splitter='best'``, `X` is allowed to contain missing
+        values. In addition to evaluating each potential threshold on
+        the non-missing data, the splitter will evaluate the split
+        with all the missing values going to the left node or the
+        right node. See :ref:`tree_missing_value_support` for details.
+
+        Parameters
+        ----------
+        X : array-like or sparse matrix, shape = (n_samples, n_features)
+            Data matrix
+
+        y : structured array, shape = (n_samples,)
+            A structured array containing the binary event indicator
+            as first field, and time of event or time of censoring as
+            second field.
+
+        check_input : boolean, default: True
+            Allow to bypass several input checking.
+            Don't use this parameter unless you know what you do.
+
+        Returns
+        -------
+        self
+        """
+        self._fit(X, y, group, sample_weight, check_input)
+        return self
+    
     def _fit(self, X, y, group=None, sample_weight=None, check_input=True, missing_values_in_feature_mask=None):
         random_state = check_random_state(self.random_state)
 
@@ -709,8 +740,8 @@ class FairSurvivalTree(SurvivalTree):
             self.n_classes_ = np.ones(self.n_outputs_, dtype=np.intp) * 2
 
         # Build tree
-        #criterion = FairSurvivalDifference(self.n_outputs_, n_samples, self.unique_times_, self.is_event_time_, group=self.group.astype(np.intp))
-        criterion = FairSurvivalDifference(self.n_outputs_, n_samples, self.unique_times_, self.is_event_time_)
+        criterion = FairSurvivalDifference(self.n_outputs_, n_samples, self.unique_times_, self.is_event_time_, group=group.astype(np.intp))
+        #criterion = FairSurvivalDifference(self.n_outputs_, n_samples, self.unique_times_, self.is_event_time_)
         #criterion = LogrankCriterion(self.n_outputs_, n_samples, self.unique_times_, self.is_event_time_)
 
         

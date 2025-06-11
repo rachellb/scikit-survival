@@ -60,6 +60,7 @@ def _parallel_build_fair_trees(
     class_weight=None,
     n_samples_bootstrap=None,
     missing_values_in_feature_mask=None,
+    group=None
 ):
     """
     Private function used to fit a single tree in parallel."""
@@ -89,7 +90,7 @@ def _parallel_build_fair_trees(
         tree._fit(
             X,
             y,
-            group=None,
+            group,
             sample_weight=curr_sample_weight,
             check_input=False,
             missing_values_in_feature_mask=missing_values_in_feature_mask,
@@ -926,7 +927,7 @@ class FairRandomSurvivalForest(SurvivalAnalysisMixin, _BaseSurvivalForest):
         self.max_leaf_nodes = max_leaf_nodes
         self.low_memory = low_memory
 
-    def fit(self, X, y, groups=None, sample_weight=None):
+    def fit(self, X, y, group=None, sample_weight=None):
         """Build a forest of survival trees from the training set (X, y).
 
         Parameters
@@ -1031,6 +1032,7 @@ class FairRandomSurvivalForest(SurvivalAnalysisMixin, _BaseSurvivalForest):
                     verbose=self.verbose,
                     n_samples_bootstrap=n_samples_bootstrap,
                     missing_values_in_feature_mask=missing_values_in_feature_mask,
+                    group=group
                 )
                 for i, t in enumerate(trees)
             )
