@@ -12,6 +12,7 @@ from sklearn.ensemble._forest import (
     _generate_unsampled_indices,
     _get_n_samples_bootstrap,
     _parallel_build_trees,
+    _generate_sample_indices
 )
 from sklearn.tree._tree import DTYPE
 from sklearn.utils._tags import get_tags
@@ -29,6 +30,8 @@ __all__ = ["RandomSurvivalForest", "ExtraSurvivalTrees", "FairRandomSurvivalFore
 MAX_INT = np.iinfo(np.int32).max
 
 
+
+
 def _sklearn_tags_patch(self):
     # BaseForest.__sklearn_tags__ calls
     # type(self.estimator)(criterion=self.criterions),
@@ -44,6 +47,63 @@ def _sklearn_tags_patch(self):
 
 BaseForest.__sklearn_tags__ = _sklearn_tags_patch
 
+
+def _parallel_build_fair_trees(
+    tree,
+    bootstrap,
+    X,
+    y,
+    sample_weight,
+    tree_idx,
+    n_trees,
+    verbose=0,
+    class_weight=None,
+    n_samples_bootstrap=None,
+    missing_values_in_feature_mask=None,
+):
+    """
+    Private function used to fit a single tree in parallel."""
+    if verbose > 1:
+        print("building tree %d of %d" % (tree_idx + 1, n_trees))
+
+    if bootstrap:
+        n_samples = X.shape[0]
+        if sample_weight is None:
+            curr_sample_weight = np.ones((n_samples,), dtype=np.float64)
+        else:
+            curr_sample_weight = sample_weight.copy()
+
+        indices = _generate_sample_indices(
+            tree.random_state, n_samples, n_samples_bootstrap
+        )
+        sample_counts = np.bincount(indices, minlength=n_samples)
+        curr_sample_weight *= sample_counts
+
+        if class_weight == "subsample":
+            with catch_warnings():
+                simplefilter("ignore", DeprecationWarning)
+                curr_sample_weight *= compute_sample_weight("auto", y, indices=indices)
+        elif class_weight == "balanced_subsample":
+            curr_sample_weight *= compute_sample_weight("balanced", y, indices=indices)
+
+        tree._fit(
+            X,
+            y,
+            group=None,
+            sample_weight=curr_sample_weight,
+            check_input=False,
+            missing_values_in_feature_mask=missing_values_in_feature_mask,
+        )
+    else:
+        tree._fit(
+            X,
+            y,
+            sample_weight=sample_weight,
+            check_input=False,
+            missing_values_in_feature_mask=missing_values_in_feature_mask,
+        )
+
+    return tree
 
 class _BaseSurvivalForest(BaseForest, metaclass=ABCMeta):
     """
@@ -866,7 +926,7 @@ class FairRandomSurvivalForest(SurvivalAnalysisMixin, _BaseSurvivalForest):
         self.max_leaf_nodes = max_leaf_nodes
         self.low_memory = low_memory
 
-    def fit(self, X, y, group, sample_weight=None):
+    def fit(self, X, y, groups=None, sample_weight=None):
         """Build a forest of survival trees from the training set (X, y).
 
         Parameters
@@ -960,7 +1020,7 @@ class FairRandomSurvivalForest(SurvivalAnalysisMixin, _BaseSurvivalForest):
             # parallel_backend contexts set at a higher level,
             # since correctness does not rely on using threads.
             trees = Parallel(n_jobs=self.n_jobs, verbose=self.verbose, prefer="threads")(
-                delayed(_parallel_build_trees)(
+                delayed(_parallel_build_fair_trees)(
                     t,
                     self.bootstrap,
                     X,
