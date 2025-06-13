@@ -383,6 +383,7 @@ cdef class FairSurvivalDifference(Criterion):
         # unique time points sorted in ascending order
         const float64_t[::1] unique_times
         const cnp.npy_bool[::1] is_event_time
+        const intp_t[:] group
         intp_t n_unique_times
         intp_t nbytes
         RisksetCounter riskset_total
@@ -400,6 +401,7 @@ cdef class FairSurvivalDifference(Criterion):
         self.n_samples = n_samples
         self.unique_times = unique_times
         self.is_event_time = is_event_time
+        self.group = group
         self.n_unique_times = unique_times.shape[0]
         self.nbytes = self.n_unique_times * sizeof(float64_t)
         self.n_node_samples = 0
@@ -540,7 +542,17 @@ cdef class FairSurvivalDifference(Criterion):
             float64_t v
             float64_t denom = 0.0
             float64_t numer = 0.0
+            float64_t n_at_risk
+            float64_t n_events
+            float64_t hazard = 0.0
+            
+        # Calculates the risk score - should be identical for each sample in the node
+        for i in range(self.n_unique_times):
+            self.riskset_total.at(i, &n_at_risk, &n_events)
+            if n_at_risk != 0:
+                hazard += n_events / n_at_risk
 
+        # This section calculates the numerator and denominator of the log-rank test. 
         for i in range(self.n_unique_times):
             events = self.weighted_n_events_left[i]
             self.riskset_total.at(i, &total_at_risk, &total_events)
@@ -548,7 +560,7 @@ cdef class FairSurvivalDifference(Criterion):
             if total_at_risk == 0:
                 break  # we reached the end
             ratio = weighted_at_risk / total_at_risk
-            numer += events - total_events * ratio
+            numer += events - total_events * ratio # sum(O-E)
             if total_at_risk > 1.0:
                 v = (total_at_risk - total_events) / (total_at_risk - 1.0) * total_events
                 denom += ratio * (1.0 - ratio) * v
