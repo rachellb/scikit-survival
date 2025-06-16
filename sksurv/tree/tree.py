@@ -717,6 +717,7 @@ class FairSurvivalTree(SurvivalTree):
             event, time = check_array_survival(X, y)
             time = time.astype(np.float64)
             self.unique_times_, self.is_event_time_ = get_unique_times(time, event)
+            
             missing_values_in_feature_mask = self._compute_missing_values_in_feature_mask(X)
             if issparse(X):
                 X.sort_indices()
@@ -740,7 +741,9 @@ class FairSurvivalTree(SurvivalTree):
             self.n_classes_ = np.ones(self.n_outputs_, dtype=np.intp) * 2
 
         # Build tree
-        criterion = FairSurvivalDifference(self.n_outputs_, n_samples, self.unique_times_, self.is_event_time_, group=group.astype(np.intp))
+        group = group.astype(np.intp)
+        num_groups = int(group.max()) + 1  # assumes 0-based dense group labels
+        criterion = FairSurvivalDifference(self.n_outputs_, n_samples, self.unique_times_, self.is_event_time_, group=group.astype(np.intp), num_groups=num_groups)
         #criterion = FairSurvivalDifference(self.n_outputs_, n_samples, self.unique_times_, self.is_event_time_)
         #criterion = LogrankCriterion(self.n_outputs_, n_samples, self.unique_times_, self.is_event_time_)
 

@@ -3,7 +3,7 @@
 # cython: wraparound=False
 
 cimport cython
-from libc.math cimport INFINITY, NAN, fabs, sqrt
+from libc.math cimport INFINITY, NAN, fabs, sqrt, log
 from libc.stdlib cimport free, malloc
 from libc.string cimport memset
 
@@ -383,15 +383,19 @@ cdef class FairSurvivalDifference(Criterion):
         # unique time points sorted in ascending order
         const float64_t[::1] unique_times
         const cnp.npy_bool[::1] is_event_time
-        const intp_t[:] group
+        const intp_t[:] groups
+        intp_t num_groups
         intp_t n_unique_times
         intp_t nbytes
         RisksetCounter riskset_total
+        float64_t* P
+        float64_t* C
+        float64_t* CF
         float64_t * weighted_n_events_left
         float64_t * weighted_delta_n_at_risk_left
         intp_t * samples_time_idx
 
-    def __cinit__(self, intp_t n_outputs, intp_t n_samples, const float64_t[::1] unique_times, const cnp.npy_bool[::1] is_event_time, const intp_t[:] group):
+    def __cinit__(self, intp_t n_outputs, intp_t n_samples, const float64_t[::1] unique_times, const cnp.npy_bool[::1] is_event_time, const intp_t[:] group, const intp_t num_groups):
         # Default values
         self.start = 0
         self.pos = 0
@@ -401,27 +405,36 @@ cdef class FairSurvivalDifference(Criterion):
         self.n_samples = n_samples
         self.unique_times = unique_times
         self.is_event_time = is_event_time
-        self.group = group
+        self.groups = group
+        self.num_groups = num_groups
         self.n_unique_times = unique_times.shape[0]
         self.nbytes = self.n_unique_times * sizeof(float64_t)
         self.n_node_samples = 0
         self.weighted_n_node_samples = 0.0
         self.weighted_n_left = 0.0
         self.weighted_n_right = 0.0
-
         self.riskset_total = RisksetCounter(unique_times)
         self.weighted_delta_n_at_risk_left = <float64_t *> malloc(self.nbytes)
         self.weighted_n_events_left = <float64_t *> malloc(self.nbytes)
         self.samples_time_idx = <intp_t *> malloc(n_samples * sizeof(intp_t))
+        self.P = <float64_t *> malloc(self.num_groups * sizeof(float64_t))
+        memset(self.P, 0, self.num_groups * sizeof(float64_t))
+        self.C = <float64_t *> malloc(self.num_groups * sizeof(float64_t))
+        memset(self.C, 0, self.num_groups * sizeof(float64_t))
+        self.CF = <float64_t *> malloc(self.num_groups * sizeof(float64_t))
+        memset(self.CF, 0, self.num_groups * sizeof(float64_t))
 
     def __dealloc__(self):
         """Destructor."""
         free(self.weighted_delta_n_at_risk_left)
         free(self.weighted_n_events_left)
         free(self.samples_time_idx)
+        free(self.P)
+        free(self.C)
+        free(self.CF)
 
     def __reduce__(self):
-        return (type(self), (self.n_outputs, self.n_samples, self.unique_times, self.is_event_time), self.__getstate__())
+        return (type(self), (self.n_outputs, self.n_samples, self.unique_times, self.is_event_time, self.group, self.num_groups), self.__getstate__())
 
     cdef int init(
         self,
@@ -545,12 +558,16 @@ cdef class FairSurvivalDifference(Criterion):
             float64_t n_at_risk
             float64_t n_events
             float64_t hazard = 0.0
+            intp_t num_groups
+            float64_t CI
             
         # Calculates the risk score - should be identical for each sample in the node
         for i in range(self.n_unique_times):
             self.riskset_total.at(i, &n_at_risk, &n_events)
             if n_at_risk != 0:
                 hazard += n_events / n_at_risk
+
+        CI = self.concordance_imparity(hazard)
 
         # This section calculates the numerator and denominator of the log-rank test. 
         for i in range(self.n_unique_times):
@@ -568,14 +585,96 @@ cdef class FairSurvivalDifference(Criterion):
             # Update number of samples at risk for next bigger timepoint
             weighted_at_risk -= self.weighted_delta_n_at_risk_left[i]
 
-        if denom != 0.0:
+        if denom != 0.0 and CI != 0:
             # absolute value is the measure of node separation
-            v = fabs(numer / sqrt(denom))
+            #v = fabs(numer / sqrt(denom))
+
+            v = log((numer / sqrt(denom))) - log(CI)
         else:  # all samples are censored
-            v = -INFINITY  # indicates that this node cannot be split
+            v = INFINITY  # indicates that this node cannot be split
 
         return v
 
+    cdef float64_t concordance_imparity(self, float64_t hazard) noexcept nogil:
+        cdef:
+            intp_t i
+            intp_t j
+            intp_t idx
+            float64_t t_i 
+            float64_t t_j 
+            float64_t e_i
+            float64_t e_j
+            intp_t g_i
+            intp_t g_j
+            # TODO: Fix this, these are placeholder risk scores
+            float64_t r_i = 0
+            float64_t r_j = 0
+            const intp_t[:] samples = self.sample_indices
+            const float64_t[:, ::1] y = self.y
+            float64_t max_diff = 0.0
+            float64_t diff
+            intp_t g1 
+            intp_t g2
+
+        for i in range(self.start, self.end):
+            idx = samples[i]
+            e_i = y[idx, 1]
+            t_i = y[idx, 0]
+            g_i = self.groups[idx]
+
+            for j in range(self.start, self.end):
+                jdx = samples[j]
+                e_j = y[jdx, 1]
+                t_j = y[jdx, 0]
+                g_j = self.groups[jdx]
+
+                if i == j:
+                    continue
+                
+                if ((t_i < t_j and e_i == 0) or (t_j < t_i and e_j == 0) or (t_i == t_j and e_i == 0 and e_j == 0)):
+                    continue
+                
+                else:
+                    self.P[g_i] = self.P[g_i] + 1
+            
+            if t_i < t_j:
+                if r_i > r_j:
+                    self.C[g_i] = self.C[g_i] + 1
+                elif r_i == r_j: 
+                    self.C[g_i] = self.C[g_i] + 0.5
+
+            if t_i > t_j:
+                if r_i < r_j:
+                    self.C[g_i] = self.C[g_i] + 1
+                elif r_i == r_j: 
+                    self.C[g_i] = self.C[g_i] + 0.5
+            
+            elif t_i == t_j: # line 23
+                if e_i == 1 and e_j == 1:
+                    if r_i == r_j:
+                        self.C[g_i] = self.C[g_i] + 1
+                    else: 
+                        self.C[g_i] = self.C[g_i] + 0.5
+                
+                elif (e_i == 0) and (e_j == 1) and (r_i < r_j):
+                    self.C[g_i] = self.C[g_i] + 1
+                elif (e_i == 1) and (e_j == 0) and (r_i > r_j):
+                    self.C[g_i] = self.C[g_i] + 1
+                else: 
+                    self.C[g_i] = self.C[g_i] + 0.5
+        
+        self.CF[g_i] = self.C[g_i]/self.P[g_i]
+
+        # Calculate the absolute max difference in CF
+        for g1 in range(self.num_groups):
+            for g2 in range(g1 + 1, self.num_groups):
+                diff = abs(self.CF[g1] - self.CF[g2])
+                if diff > max_diff:
+                    max_diff = diff
+
+            
+        return max_diff
+    
     cdef float64_t node_impurity(self) noexcept nogil:
         """Evaluate the impurity of the current node, i.e. the impurity of
            samples[start:end]."""
