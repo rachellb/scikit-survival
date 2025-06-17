@@ -743,7 +743,7 @@ class FairSurvivalTree(SurvivalTree):
         # Build tree
         group = group.astype(np.intp)
         num_groups = int(group.max()) + 1  # assumes 0-based dense group labels
-        criterion = FairSurvivalDifference(self.n_outputs_, n_samples, self.unique_times_, self.is_event_time_, group=group.astype(np.intp), num_groups=num_groups)
+        criterion = FairSurvivalDifference(self.n_outputs_, n_samples, self.unique_times_, self.is_event_time_, group.astype(np.intp), num_groups)
         #criterion = FairSurvivalDifference(self.n_outputs_, n_samples, self.unique_times_, self.is_event_time_)
         #criterion = LogrankCriterion(self.n_outputs_, n_samples, self.unique_times_, self.is_event_time_)
 

@@ -383,7 +383,7 @@ cdef class FairSurvivalDifference(Criterion):
         # unique time points sorted in ascending order
         const float64_t[::1] unique_times
         const cnp.npy_bool[::1] is_event_time
-        const intp_t[:] groups
+        const intp_t[:] group
         intp_t num_groups
         intp_t n_unique_times
         intp_t nbytes
@@ -393,7 +393,11 @@ cdef class FairSurvivalDifference(Criterion):
         float64_t* CF
         float64_t * weighted_n_events_left
         float64_t * weighted_delta_n_at_risk_left
+        float64_t * weighted_n_events_right
+        float64_t * weighted_delta_n_at_risk_right
         intp_t * samples_time_idx
+        
+
 
     def __cinit__(self, intp_t n_outputs, intp_t n_samples, const float64_t[::1] unique_times, const cnp.npy_bool[::1] is_event_time, const intp_t[:] group, const intp_t num_groups):
         # Default values
@@ -405,7 +409,7 @@ cdef class FairSurvivalDifference(Criterion):
         self.n_samples = n_samples
         self.unique_times = unique_times
         self.is_event_time = is_event_time
-        self.groups = group
+        self.group = group
         self.num_groups = num_groups
         self.n_unique_times = unique_times.shape[0]
         self.nbytes = self.n_unique_times * sizeof(float64_t)
@@ -416,6 +420,8 @@ cdef class FairSurvivalDifference(Criterion):
         self.riskset_total = RisksetCounter(unique_times)
         self.weighted_delta_n_at_risk_left = <float64_t *> malloc(self.nbytes)
         self.weighted_n_events_left = <float64_t *> malloc(self.nbytes)
+        self.weighted_delta_n_at_risk_right = <float64_t *> malloc(self.nbytes)
+        self.weighted_n_events_right = <float64_t *> malloc(self.nbytes)
         self.samples_time_idx = <intp_t *> malloc(n_samples * sizeof(intp_t))
         self.P = <float64_t *> malloc(self.num_groups * sizeof(float64_t))
         memset(self.P, 0, self.num_groups * sizeof(float64_t))
@@ -424,14 +430,18 @@ cdef class FairSurvivalDifference(Criterion):
         self.CF = <float64_t *> malloc(self.num_groups * sizeof(float64_t))
         memset(self.CF, 0, self.num_groups * sizeof(float64_t))
 
+
     def __dealloc__(self):
         """Destructor."""
         free(self.weighted_delta_n_at_risk_left)
         free(self.weighted_n_events_left)
+        free(self.weighted_delta_n_at_risk_right)
+        free(self.weighted_n_events_right)
         free(self.samples_time_idx)
         free(self.P)
         free(self.C)
         free(self.CF)
+        #free(risk_scores)
 
     def __reduce__(self):
         return (type(self), (self.n_outputs, self.n_samples, self.unique_times, self.is_event_time, self.group, self.num_groups), self.__getstate__())
@@ -547,6 +557,8 @@ cdef class FairSurvivalDifference(Criterion):
 
         cdef:
             intp_t i
+            intp_t j
+            intp_t k
             float64_t weighted_at_risk = self.weighted_n_left
             float64_t events
             float64_t total_at_risk
@@ -560,14 +572,31 @@ cdef class FairSurvivalDifference(Criterion):
             float64_t hazard = 0.0
             intp_t num_groups
             float64_t CI
-            
-        # Calculates the risk score - should be identical for each sample in the node
-        for i in range(self.n_unique_times):
-            self.riskset_total.at(i, &n_at_risk, &n_events)
-            if n_at_risk != 0:
-                hazard += n_events / n_at_risk
+            float64_t risk_L
+            float64_t risk_R
 
-        CI = self.concordance_imparity(hazard)
+        for j in range(self.n_unique_times):
+            if self.weighted_delta_n_at_risk_left[j] != 0:
+                risk_L += self.weighted_n_events_left[j] / self.weighted_delta_n_at_risk_left[j]
+
+        for k in range(self.n_unique_times):
+            if self.weighted_delta_n_at_risk_right[k] != 0:
+                risk_R += self.weighted_n_events_right[k] / self.weighted_delta_n_at_risk_right[k]
+
+        cdef float64_t[:] risk_scores
+        with gil:
+            risk_scores = np.zeros(self.n_samples, dtype=np.float64)
+
+        # Assign left-node risk
+        for i in range(self.start, self.pos):
+            risk_scores[self.sample_indices[i]] = risk_L
+
+        # Assign right-node risk
+        for i in range(self.pos, self.end):
+            risk_scores[self.sample_indices[i]] = risk_R
+
+
+        CI = self.concordance_imparity(risk_scores)
 
         # This section calculates the numerator and denominator of the log-rank test. 
         for i in range(self.n_unique_times):
@@ -589,13 +618,13 @@ cdef class FairSurvivalDifference(Criterion):
             # absolute value is the measure of node separation
             #v = fabs(numer / sqrt(denom))
 
-            v = log((numer / sqrt(denom))) - log(CI)
+            v = log(fabs(numer / sqrt(denom))) - log(CI)
         else:  # all samples are censored
             v = INFINITY  # indicates that this node cannot be split
 
         return v
 
-    cdef float64_t concordance_imparity(self, float64_t hazard) noexcept nogil:
+    cdef float64_t concordance_imparity(self, const float64_t[:] risk_scores) noexcept nogil:
         cdef:
             intp_t i
             intp_t j
@@ -607,8 +636,8 @@ cdef class FairSurvivalDifference(Criterion):
             intp_t g_i
             intp_t g_j
             # TODO: Fix this, these are placeholder risk scores
-            float64_t r_i = 0
-            float64_t r_j = 0
+            float64_t r_i
+            float64_t r_j
             const intp_t[:] samples = self.sample_indices
             const float64_t[:, ::1] y = self.y
             float64_t max_diff = 0.0
@@ -620,13 +649,15 @@ cdef class FairSurvivalDifference(Criterion):
             idx = samples[i]
             e_i = y[idx, 1]
             t_i = y[idx, 0]
-            g_i = self.groups[idx]
+            g_i = self.group[idx]
+            r_i = risk_scores[idx]
 
             for j in range(self.start, self.end):
                 jdx = samples[j]
                 e_j = y[jdx, 1]
                 t_j = y[jdx, 0]
-                g_j = self.groups[jdx]
+                g_j = self.group[jdx]
+                r_j = risk_scores[idx]
 
                 if i == j:
                     continue
