@@ -25,6 +25,7 @@ __all__ = [
     "as_integrated_brier_score_scorer",
     "brier_score",
     "concordance_index_censored",
+    "concordance_imparity",
     "concordance_index_ipcw",
     "cumulative_dynamic_auc",
     "integrated_brier_score",
@@ -217,6 +218,146 @@ def concordance_index_censored(event_indicator, event_time, estimate, tied_tol=1
     w = np.ones_like(estimate)
 
     return _estimate_concordance_index(event_indicator, event_time, estimate, w, tied_tol)
+
+def _estimate_concordance_imparity(event_indicator, event_time, estimate, group, num_groups, tied_tol=1e-8):
+    """_summary_
+
+    Args:
+        model (_type_): survival model
+        X_test (_type_): a pandas dataframe containing the features of the test set
+        y_test (_type_): an sksurv ndarray containing status and survival time
+        group (_type_): an array containing the label-encoded values of the sensitive group in the test set
+
+    Returns:
+        CI (float): The concordance imparity of the model
+    """
+    
+    
+    P = [0] * num_groups
+    C = [0] * num_groups
+    CF = [0] * num_groups
+    
+    for i in range(len(times)):
+        d_i = events[i]
+        t_i = times[i]
+        r_i = risk_scores[i]
+        g_i = group[i]
+        
+        for j in range(len(times)):
+            if j == i:
+                continue
+            else:
+                    d_j = events[j]
+                    t_j = times[j]
+                    r_j = risk_scores[j]
+                    g_j = group[j]
+                    
+                    if ((t_i < t_j) and (d_i == 0)) or ((t_j < t_i) and (d_j == 0)) or ((t_i == t_j) and ((d_i == 0) and (d_j == 0))):
+                        continue
+                    else:
+                        P[g_i] += 1
+                    
+                    if t_i < t_j:
+                        if r_i > r_j:
+                            C[g_i] += 1
+                        elif r_i == r_j:
+                            C[g_i] += 0.5
+                    elif t_i > t_j:
+                        if r_i < r_j:
+                            C[g_i] += 1
+                        elif r_i == r_j:
+                            C[g_i] += 0.5
+                    elif t_i == t_j:
+                        if d_i == 1 and d_j == 1:
+                            if r_i == r_j:
+                                C[g_i] += 1
+                            else:
+                                C[g_i] += 0.5
+                        elif d_i == 0 and d_j == 1 and (r_i < r_j):
+                            C[g_i] += 1
+                        elif d_i == 1 and d_j == 0 and (r_i > r_j):
+                            C[g_i] += 1
+                        else:
+                            C[g_i] += 0.5
+                            
+    CF = [x/y for x,y in zip(C,P)]
+    
+    max_diff = 0
+    for g1 in range(num_groups):
+            for g2 in range(g1 + 1, num_groups):
+                diff = abs(CF[g1] - CF[g2])
+                if diff > max_diff:
+                    max_diff = diff
+
+    return np.abs(max_diff)
+
+
+def concordance_imparity(event_indicator, event_time, estimate, group, num_groups, tied_tol=1e-8):
+    """Concordance imparity for right-censored data
+
+    The concordance index is defined as the proportion of all comparable pairs
+    in which the predictions and outcomes are concordant.
+    
+    The concordance imparity is very similar to concordance index, only instead it calculates 
+    group-wise concordance, then finds the largest deviation in concordance between groups. 
+    A concordance imparity closer to 0 means a less biased model. 
+
+    Two samples are comparable if (i) both of them experienced an event (at different times),
+    or (ii) the one with a shorter observed survival time experienced an event, in which case
+    the event-free subject "outlived" the other.
+
+    Concordance intuitively means that two samples were ordered correctly by the model.
+    More specifically, two samples are concordant, if the one with a higher estimated
+    risk score has a shorter actual survival time.
+    When predicted risks are identical for a pair, 0.5 rather than 1 is added to the count
+    of concordant pairs.
+    
+    Parameters
+    ----------
+    event_indicator : array-like, shape = (n_samples,)
+        Boolean array denotes whether an event occurred
+
+    event_time : array-like, shape = (n_samples,)
+        Array containing the time of an event or time of censoring
+
+    estimate : array-like, shape = (n_samples,)
+        Estimated risk of experiencing an event
+
+    tied_tol : float, optional, default: 1e-8
+        The tolerance value for considering ties.
+        If the absolute difference between risk scores is smaller
+        or equal than `tied_tol`, risk scores are considered tied.
+
+    Returns
+    -------
+    cindex : float
+        Concordance index
+
+    concordant : int
+        Number of concordant pairs
+
+    discordant : int
+        Number of discordant pairs
+
+    tied_risk : int
+        Number of pairs having tied estimated risks
+
+    tied_time : int
+        Number of comparable pairs sharing the same time
+
+
+    References
+    ----------
+    .. [1] Zhang, W., & Weiss, J. C. (2022, June). Longitudinal fairness with censorship. 
+    In proceedings of the AAAI conference on artificial intelligence 
+    (Vol. 36, No. 11, pp. 12235-12243).
+    """
+    event_indicator, event_time, estimate = _check_inputs(event_indicator, event_time, estimate)
+
+
+    return _estimate_concordance_imparity(event_indicator, event_time, estimate, group, num_groups, tied_tol)
+
+
 
 
 def concordance_index_ipcw(survival_train, survival_test, estimate, tau=None, tied_tol=1e-8):

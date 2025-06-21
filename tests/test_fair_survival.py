@@ -168,8 +168,6 @@ def test_concordance_imparity_simple_case():
 
 
 
-
-
 def compare_survival(y, group_indicator, return_stats=False):
     """K-sample log-rank hypothesis test of identical survival functions.
 
@@ -283,6 +281,45 @@ def compare_survival(y, group_indicator, return_stats=False):
     return chisq, pval
 
 
+import numpy as np
+import pytest
+from sksurv.ensemble import FairRandomSurvivalForest
+from sksurv.util import Surv
+
+
+def test_group_membership_used_correctly():
+    # Create toy survival data (event_time, event)
+    y_struct = np.array([
+        (True, 5),
+        (True, 6),
+        (False, 7),
+        (True, 8)
+    ], dtype=[("event", "?"), ("time", "f8")])
+
+    # Toy feature: single column
+    X = np.array([[1.0], [2.0], [3.0], [4.0]])
+
+    # Group assignments
+    group = np.array([0, 1, 0, 1], dtype=np.intp)
+
+    # Create and train fair survival forest (just 1 tree to simplify test)
+    model = FairRandomSurvivalForest(n_estimators=1, max_depth=2, random_state=42)
+    model.fit(X, y_struct, group=group)
+    
+    # Access the custom criterion
+    fair_tree = model.estimators_[0]
+    criterion = fair_tree.criterion  # Your FairSurvivalDifference instance
+    
+    #print(criterion)
+
+    # Retrieve stored group membership
+    stored_groups = criterion.get_groups()
+
+    # Assert that it matches the input group exactly
+    np.testing.assert_array_equal(stored_groups, group)
+
+
+
 """
 def test_group_split_behavior(data):
     X_train, _, y_train, _, group, = data
@@ -314,6 +351,7 @@ def test_criterion_accessibility(data):
     assert hasattr(criterion, "concordance_imparity"), "Criterion missing concordance_imparity method"
 """ 
 
+# Modelled after the tests in "test_tree.py"
 class FairSurvivalDifferenceTreeBuilder:
     def __init__(self, max_depth=4, min_leaf=20):
         self.max_depth = max_depth
@@ -355,11 +393,14 @@ class FairSurvivalDifferenceTreeBuilder:
         return pd.DataFrame.from_dict(dict(zip(range(len(node_stats)), node_stats)), orient="index")
 
     def _get_best_split(self, X, y):
+        
         min_leaf = self.min_leaf
         best_val = TREE_UNDEFINED
         best_feat = TREE_UNDEFINED
         best_stat = -np.inf
 
+        # If there aren't any events, then we have no useful
+        # signals for splitting. 
         if y[y.dtype.names[0]].sum() == 0:
             return best_val, best_feat, best_stat
         for j in range(X.shape[1]):

@@ -493,6 +493,8 @@ cdef class FairSurvivalDifference(Criterion):
 
     cdef int reset(self) except -1 nogil:
         """Reset the criterion at pos=start."""
+        #with gil:
+        #    print("Running reset \n")
         self.weighted_n_left = 0.0
         self.weighted_n_right = self.weighted_n_node_samples
         self.pos = self.start
@@ -500,10 +502,15 @@ cdef class FairSurvivalDifference(Criterion):
 
     cdef int reverse_reset(self) except -1 nogil:
         """Reset the criterion at pos=end."""
+        with gil:
+            print("Running reset reverse \n")
         self.weighted_n_right = 0.0
         self.weighted_n_left = self.weighted_n_node_samples
         self.pos = self.end
         return 0
+
+    def get_groups(self):
+        return np.asarray(self.group)
 
     cdef int update(self, intp_t new_pos) except -1 nogil:
         """Updated statistics by moving samples[pos:new_pos] to the left."""
@@ -521,6 +528,9 @@ cdef class FairSurvivalDifference(Criterion):
 
         memset(self.weighted_delta_n_at_risk_left, 0, self.nbytes)
         memset(self.weighted_n_events_left, 0, self.nbytes)
+
+        #with gil:
+        #    print("Running update \n")
 
         # Update statistics up to new_pos
         self.weighted_n_left = 0.0
@@ -559,12 +569,14 @@ cdef class FairSurvivalDifference(Criterion):
             intp_t i
             intp_t j
             intp_t k
+            intp_t n
             float64_t weighted_at_risk = self.weighted_n_left
             float64_t events
             float64_t total_at_risk
             float64_t total_events
             float64_t ratio
             float64_t v
+            float64_t SD
             float64_t denom = 0.0
             float64_t numer = 0.0
             float64_t n_at_risk
@@ -574,6 +586,12 @@ cdef class FairSurvivalDifference(Criterion):
             float64_t CI
             float64_t risk_L
             float64_t risk_R
+            
+    
+        #with gil:
+        #    print("Group membership from Cython:")
+        #    for n in range(self.start, self.end):
+        #        print(f"Sample {n}: Group {self.group[n]}")
 
         for j in range(self.n_unique_times):
             if self.weighted_delta_n_at_risk_left[j] != 0:
@@ -582,6 +600,20 @@ cdef class FairSurvivalDifference(Criterion):
         for k in range(self.n_unique_times):
             if self.weighted_delta_n_at_risk_right[k] != 0:
                 risk_R += self.weighted_n_events_right[k] / self.weighted_delta_n_at_risk_right[k]
+
+        #with gil:
+        #    print("Running proxy impurity improvement \n")
+            #print("\n")
+        #    print("\n")
+        #    print("Number of at events at right node time 1: ", self.weighted_delta_n_at_risk_right[1])
+        #    print("\n")
+        #    print("Number of at events at left node time 1: ", self.weighted_delta_n_at_risk_left[1])
+        #    print("\n")
+            #print("Evaluating impurity for node starting at ", self.start)
+            #print("\n")
+        #    print("Risk for left: ", risk_L, " Right: ", risk_R)
+        #    print("\n")
+        
 
         cdef float64_t[:] risk_scores
         with gil:
@@ -597,6 +629,18 @@ cdef class FairSurvivalDifference(Criterion):
 
 
         CI = self.concordance_imparity(risk_scores)
+
+        #with gil:
+        #    print("C:")
+        #    for i in range(self.num_groups):
+        #        print(f"  Group {i}: {self.C[i]}")
+        #    print("\n")
+        #    print("P:")
+        #    for i in range(self.num_groups):
+        #        print(f"  Group {i}: {self.P[i]}")
+        #    print("\n")
+        #    print("CI: ", CI)
+        #    print("\n")
 
         # This section calculates the numerator and denominator of the log-rank test. 
         for i in range(self.n_unique_times):
@@ -618,7 +662,12 @@ cdef class FairSurvivalDifference(Criterion):
             # absolute value is the measure of node separation
             #v = fabs(numer / sqrt(denom))
 
-            v = log(fabs(numer / sqrt(denom))) - log(CI)
+            SD = numer / sqrt(denom)
+            #with gil:
+            #    print("SD: ", SD)
+            #    print("\n")
+
+            v = log(SD) - log(CI)
         else:  # all samples are censored
             v = INFINITY  # indicates that this node cannot be split
 
@@ -631,11 +680,9 @@ cdef class FairSurvivalDifference(Criterion):
             intp_t idx
             float64_t t_i 
             float64_t t_j 
-            float64_t e_i
-            float64_t e_j
+            float64_t d_i
+            float64_t d_j
             intp_t g_i
-            intp_t g_j
-            # TODO: Fix this, these are placeholder risk scores
             float64_t r_i
             float64_t r_j
             const intp_t[:] samples = self.sample_indices
@@ -647,22 +694,21 @@ cdef class FairSurvivalDifference(Criterion):
 
         for i in range(self.start, self.end):
             idx = samples[i]
-            e_i = y[idx, 1]
+            d_i = y[idx, 1]
             t_i = y[idx, 0]
             g_i = self.group[idx]
             r_i = risk_scores[idx]
 
             for j in range(self.start, self.end):
                 jdx = samples[j]
-                e_j = y[jdx, 1]
+                d_j = y[jdx, 1]
                 t_j = y[jdx, 0]
-                g_j = self.group[jdx]
                 r_j = risk_scores[idx]
 
                 if i == j:
                     continue
                 
-                if ((t_i < t_j and e_i == 0) or (t_j < t_i and e_j == 0) or (t_i == t_j and e_i == 0 and e_j == 0)):
+                if ((t_i < t_j) and (d_i == 0)) or ((t_j < t_i) and (d_j == 0)) or ((t_i == t_j) and ((d_i == 0) and (d_j == 0))):
                     continue
                 
                 else:
@@ -681,15 +727,15 @@ cdef class FairSurvivalDifference(Criterion):
                     self.C[g_i] = self.C[g_i] + 0.5
             
             elif t_i == t_j: # line 23
-                if e_i == 1 and e_j == 1:
+                if d_i == 1 and d_j == 1:
                     if r_i == r_j:
                         self.C[g_i] = self.C[g_i] + 1
                     else: 
                         self.C[g_i] = self.C[g_i] + 0.5
                 
-                elif (e_i == 0) and (e_j == 1) and (r_i < r_j):
+                elif (d_i == 0) and (d_j == 1) and (r_i < r_j):
                     self.C[g_i] = self.C[g_i] + 1
-                elif (e_i == 1) and (e_j == 0) and (r_i > r_j):
+                elif (d_i == 1) and (d_j == 0) and (r_i > r_j):
                     self.C[g_i] = self.C[g_i] + 1
                 else: 
                     self.C[g_i] = self.C[g_i] + 0.5

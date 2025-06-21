@@ -679,6 +679,8 @@ class SurvivalTree(BaseEstimator, SurvivalAnalysisMixin):
 
 class FairSurvivalTree(SurvivalTree):
     
+    criterion = "FSD"
+    
     def fit(self, X, y, group, sample_weight=None, check_input=True):
         """Build a survival tree from the training set (X, y).
 
